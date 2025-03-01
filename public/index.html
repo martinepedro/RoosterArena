@@ -102,7 +102,7 @@
 </head>
 <body>
     <div id="info">
-        WASD = Move | SPACE = Jump | MOUSE = Look around | CLICK = Lock Mouse | ESC = Free mouse/untarget chat
+        WASD = Move | SPACE = Jump | SHIFT = Run | MOUSE = Look around | CLICK = Lock Mouse | ESC = Free mouse/untarget chat
     </div>
     <div id="players">
         <h3>Players Online: <span id="playerCount">0</span></h3>
@@ -144,6 +144,7 @@
         let velocity = new THREE.Vector3();
         let direction = new THREE.Vector3();
         let characterRotation = new THREE.Euler(0, 0, 0);
+        let cameraVerticalAngle = 0;
         let jumping = false;
         let canJump = true;
         let pointerLocked = false;
@@ -722,9 +723,11 @@
                 // Rotate character based on mouse X movement
                 characterRotation.y -= movementX * 0.002;
                 
-                // Vertical camera rotation (limited)
-                const verticalRotation = camera.rotation.x - movementY * 0.002;
-                camera.rotation.x = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, verticalRotation));
+                // Apply vertical camera rotation based on mouse Y movement
+                cameraVerticalAngle -= movementY * 0.002;
+                
+                // Limit vertical camera rotation to prevent flipping
+                cameraVerticalAngle = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, cameraVerticalAngle));
             }
         }
         
@@ -762,16 +765,16 @@
             direction.set(0, 0, 0);
             
             if (keyboard['KeyW']) {
-                direction.z = 1;
-            }
-            if (keyboard['KeyS']) {
                 direction.z = -1;
             }
+            if (keyboard['KeyS']) {
+                direction.z = 1;
+            }
             if (keyboard['KeyA']) {
-                direction.x = 1;
+                direction.x = -1;
             }
             if (keyboard['KeyD']) {
-                direction.x = -1;
+                direction.x = 1;
             }
             
             // Jump
@@ -809,18 +812,28 @@
             // Update character rotation
             character.rotation.y = characterRotation.y;
             
-            // Update camera position (third-person, positioned in front of the character)
-            const cameraOffset = new THREE.Vector3(
-                -3 * Math.sin(characterRotation.y),
-                2,
-                -3 * Math.cos(characterRotation.y)
+            // Update camera position (third-person, positioned based on character direction)
+            // Base offset distance from character
+            const offsetDistance = 4;
+            
+            // Calculate horizontal position based on character rotation
+            const horizontalOffset = new THREE.Vector3(
+                Math.sin(characterRotation.y) * offsetDistance,
+                0,
+                Math.cos(characterRotation.y) * offsetDistance
             );
             
-            camera.position.copy(character.position).add(cameraOffset);
+            // Apply vertical angle to get the final camera position
+            const verticalOffset = Math.sin(cameraVerticalAngle) * offsetDistance;
             
-            // Make camera look at character
-            const lookAtPosition = character.position.clone();
-            lookAtPosition.y += 1; // Look at character's head level
+            camera.position.set(
+                character.position.x + horizontalOffset.x,
+                character.position.y + 1.5 + verticalOffset, // Add 1.5 for character height
+                character.position.z + horizontalOffset.z
+            );
+            
+            // Look at the character's head level
+            const lookAtPosition = character.position.clone().add(new THREE.Vector3(0, 1.5, 0));
             camera.lookAt(lookAtPosition);
             
             // Update animations based on movement
