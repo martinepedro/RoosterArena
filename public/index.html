@@ -765,10 +765,10 @@
             direction.set(0, 0, 0);
             
             if (keyboard['KeyW']) {
-                direction.z = -1;
+                direction.z = 1;  // Changed from -1 to 1
             }
             if (keyboard['KeyS']) {
-                direction.z = 1;
+                direction.z = -1;  // Changed from 1 to -1
             }
             if (keyboard['KeyA']) {
                 direction.x = -1;
@@ -818,9 +818,9 @@
             
             // Calculate horizontal position based on character rotation
             const horizontalOffset = new THREE.Vector3(
-                Math.sin(characterRotation.y) * offsetDistance,
+                -Math.sin(characterRotation.y) * offsetDistance,
                 0,
-                Math.cos(characterRotation.y) * offsetDistance
+                -Math.cos(characterRotation.y) * offsetDistance
             );
             
             // Apply vertical angle to get the final camera position
