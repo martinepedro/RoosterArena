@@ -720,11 +720,11 @@
                 const movementX = event.movementX || 0;
                 const movementY = event.movementY || 0;
                 
-                // Rotate character based on mouse X movement
-                characterRotation.y -= movementX * 0.002;
+                // Rotate character based on mouse X movement (reversed to fix inversion)
+                characterRotation.y += movementX * 0.002;
                 
-                // Apply vertical camera rotation based on mouse Y movement
-                cameraVerticalAngle -= movementY * 0.002;
+                // Apply vertical camera rotation based on mouse Y movement (reversed to fix inversion)
+                cameraVerticalAngle += movementY * 0.002;
                 
                 // Limit vertical camera rotation to prevent flipping
                 cameraVerticalAngle = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, cameraVerticalAngle));
