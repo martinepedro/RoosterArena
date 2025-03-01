@@ -811,9 +811,9 @@
             
             // Update camera position (third-person, positioned in front of the character)
             const cameraOffset = new THREE.Vector3(
-                3 * Math.sin(characterRotation.y),
+                -3 * Math.sin(characterRotation.y),
                 2,
-                3 * Math.cos(characterRotation.y)
+                -3 * Math.cos(characterRotation.y)
             );
             
             camera.position.copy(character.position).add(cameraOffset);
