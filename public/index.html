@@ -723,8 +723,8 @@
                 // Rotate character based on mouse X movement (inverted)
                 characterRotation.y -= movementX * 0.002;
                 
-                // Apply vertical camera rotation based on mouse Y movement (inverted)
-                cameraVerticalAngle -= movementY * 0.002;
+                // Apply vertical camera rotation based on mouse Y movement (Y-axis inverted again)
+                cameraVerticalAngle += movementY * 0.002;
                 
                 // Limit vertical camera rotation to prevent flipping
                 cameraVerticalAngle = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, cameraVerticalAngle));
@@ -765,16 +765,16 @@
             direction.set(0, 0, 0);
             
             if (keyboard['KeyW']) {
-                direction.z = 1;  // Changed from -1 to 1
+                direction.z = 1;
             }
             if (keyboard['KeyS']) {
-                direction.z = -1;  // Changed from 1 to -1
+                direction.z = -1;
             }
             if (keyboard['KeyA']) {
-                direction.x = -1;
+                direction.x = 1;  // Changed from -1 to 1 (inverted)
             }
             if (keyboard['KeyD']) {
-                direction.x = 1;
+                direction.x = -1;  // Changed from 1 to -1 (inverted)
             }
             
             // Jump
