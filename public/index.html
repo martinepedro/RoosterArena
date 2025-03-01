@@ -121,6 +121,8 @@
     </div>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     
     <script>
@@ -135,7 +137,9 @@
         
         // Global variables
         let camera, scene, renderer;
-        let character;
+        let character, characterModel;
+        let mixer, animations = {};
+        let currentAnimation = 'idle';
         let clock = new THREE.Clock();
         let velocity = new THREE.Vector3();
         let direction = new THREE.Vector3();
@@ -255,6 +259,23 @@
                         
                         // Update rotation
                         playerMesh.rotation.y = playerData.rotation;
+                        
+                        // Update animation if available
+                        if (otherPlayers[id].modelLoaded && playerData.animation && 
+                            otherPlayers[id].animations && otherPlayers[id].animations[playerData.animation]) {
+                            
+                            // Only change animation if needed
+                            if (otherPlayers[id].currentAnimation !== playerData.animation) {
+                                // Fade out current animation
+                                if (otherPlayers[id].animations[otherPlayers[id].currentAnimation]) {
+                                    otherPlayers[id].animations[otherPlayers[id].currentAnimation].fadeOut(0.2);
+                                }
+                                
+                                // Fade in new animation
+                                otherPlayers[id].animations[playerData.animation].reset().fadeIn(0.2).play();
+                                otherPlayers[id].currentAnimation = playerData.animation;
+                            }
+                        }
                     }
                 });
             });
@@ -347,24 +368,8 @@
         }
         
         function createOtherPlayer(id, playerInfo) {
-            // Create a player mesh (different color to distinguish from main player)
+            // Create a player group
             const playerGroup = new THREE.Group();
-            
-            // Body
-            const bodyGeometry = new THREE.BoxGeometry(1, 1.5, 0.5);
-            const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xAA3333 });
-            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-            body.position.y = 0.75;
-            body.castShadow = true;
-            playerGroup.add(body);
-            
-            // Head (direction indicator)
-            const headGeometry = new THREE.ConeGeometry(0.3, 0.5, 4);
-            const headMaterial = new THREE.MeshStandardMaterial({ color: 0xFF3333 });
-            const head = new THREE.Mesh(headGeometry, headMaterial);
-            head.position.set(0, 1.75, 0.25);
-            head.castShadow = true;
-            playerGroup.add(head);
             
             // Add name tag
             const canvas = document.createElement("canvas");
@@ -401,8 +406,72 @@
             // Store reference
             otherPlayers[id] = {
                 mesh: playerGroup,
-                name: playerInfo.name
+                name: playerInfo.name,
+                modelLoaded: false
             };
+            
+            // Load 3D model for other player
+            const modelUrl = 'https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/gltf/Xbot.glb';
+            
+            // Placeholder while model loads
+            const placeholder = new THREE.Mesh(
+                new THREE.BoxGeometry(0.5, 1.7, 0.5),
+                new THREE.MeshBasicMaterial({ color: 0xAA3333, wireframe: true })
+            );
+            placeholder.position.y = 0.85;
+            playerGroup.add(placeholder);
+            
+            // Set up loaders
+            const dracoLoader = new THREE.DRACOLoader();
+            dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/draco/');
+            
+            const loader = new THREE.GLTFLoader();
+            loader.setDRACOLoader(dracoLoader);
+            
+            // Load the model
+            loader.load(modelUrl, function(gltf) {
+                // Remove placeholder
+                playerGroup.remove(placeholder);
+                
+                // Add the model
+                const playerModel = gltf.scene;
+                playerModel.scale.set(1, 1, 1);
+                playerModel.position.y = 0; // Adjust if needed
+                playerModel.traverse(function(node) {
+                    if (node.isMesh) {
+                        node.castShadow = true;
+                        // Use a different color material to distinguish from main player
+                        if (node.material) {
+                            const newMaterial = node.material.clone();
+                            newMaterial.color.setHex(0xDD5555); // Reddish tint
+                            node.material = newMaterial;
+                        }
+                    }
+                });
+                playerGroup.add(playerModel);
+                
+                // Set up animation mixer
+                const otherMixer = new THREE.AnimationMixer(playerModel);
+                
+                // Store the mixer and model
+                otherPlayers[id].mixer = otherMixer;
+                otherPlayers[id].model = playerModel;
+                otherPlayers[id].modelLoaded = true;
+                
+                // Set idle animation
+                if (gltf.animations.length > 0) {
+                    const idleAnimation = otherMixer.clipAction(gltf.animations[0]);
+                    idleAnimation.play();
+                    otherPlayers[id].currentAnimation = 'idle';
+                }
+                
+                // Store animations
+                otherPlayers[id].animations = {};
+                gltf.animations.forEach((clip) => {
+                    const name = clip.name.toLowerCase();
+                    otherPlayers[id].animations[name] = otherMixer.clipAction(clip);
+                });
+            });
         }
         
         function init() {
@@ -476,26 +545,14 @@
         }
         
         function createCharacter() {
-            // Create simple character (blue box with a cone on top to indicate direction)
-            const characterGroup = new THREE.Group();
+            // Create a group to hold the character and its label
+            character = new THREE.Group();
             
-            // Body
-            const bodyGeometry = new THREE.BoxGeometry(1, 1.5, 0.5);
-            const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x3333AA });
-            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-            body.position.y = 0.75;
-            body.castShadow = true;
-            characterGroup.add(body);
+            // Position the character group at ground level
+            character.position.set(0, groundLevel, 0);
+            scene.add(character);
             
-            // Head (direction indicator)
-            const headGeometry = new THREE.ConeGeometry(0.3, 0.5, 4);
-            const headMaterial = new THREE.MeshStandardMaterial({ color: 0x3333FF });
-            const head = new THREE.Mesh(headGeometry, headMaterial);
-            head.position.set(0, 1.75, 0.25);
-            head.castShadow = true;
-            characterGroup.add(head);
-            
-            // Add name tag
+            // Add name tag above where the model will be
             const canvas = document.createElement("canvas");
             const context = canvas.getContext("2d");
             canvas.width = 256;
@@ -510,11 +567,85 @@
             const nameSprite = new THREE.Sprite(nameMaterial);
             nameSprite.position.set(0, 2.5, 0);
             nameSprite.scale.set(2, 0.5, 1);
-            characterGroup.add(nameSprite);
+            character.add(nameSprite);
             
-            character = characterGroup;
-            character.position.set(0, groundLevel, 0);
-            scene.add(character);
+            // Load 3D character model
+            const modelUrl = 'https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/gltf/Xbot.glb';
+            
+            // Set up loaders
+            const dracoLoader = new THREE.DRACOLoader();
+            dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/draco/');
+            
+            const loader = new THREE.GLTFLoader();
+            loader.setDRACOLoader(dracoLoader);
+            
+            // Temporary placeholder while model loads
+            const placeholder = new THREE.Mesh(
+                new THREE.BoxGeometry(0.5, 1.7, 0.5),
+                new THREE.MeshBasicMaterial({ color: 0x444444, wireframe: true })
+            );
+            placeholder.position.y = 0.85;
+            character.add(placeholder);
+            
+            // Load the model
+            loader.load(modelUrl, function(gltf) {
+                // Remove placeholder
+                character.remove(placeholder);
+                
+                // Add the model to the character group
+                characterModel = gltf.scene;
+                characterModel.scale.set(1, 1, 1);
+                characterModel.position.y = 0; // Adjust if needed
+                characterModel.traverse(function(node) {
+                    if (node.isMesh) {
+                        node.castShadow = true;
+                    }
+                });
+                character.add(characterModel);
+                
+                // Set up animation mixer
+                mixer = new THREE.AnimationMixer(characterModel);
+                
+                // Parse animations
+                gltf.animations.forEach((clip) => {
+                    const name = clip.name.toLowerCase();
+                    animations[name] = mixer.clipAction(clip);
+                });
+                
+                // Default animations if the model doesn't have specific ones
+                if (!animations['idle'] && animations.length > 0) {
+                    animations['idle'] = animations[Object.keys(animations)[0]];
+                }
+                
+                if (!animations['walk'] && animations['idle']) {
+                    animations['walk'] = animations['idle'].clone();
+                    animations['walk'].timeScale = 1.5;
+                }
+                
+                if (!animations['run'] && animations['walk']) {
+                    animations['run'] = animations['walk'].clone();
+                    animations['run'].timeScale = 2.5;
+                }
+                
+                // Play idle animation
+                if (animations['idle']) {
+                    animations['idle'].play();
+                    currentAnimation = 'idle';
+                }
+                
+                // Notify server we're ready with our character
+                socket.emit("updatePosition", {
+                    position: {
+                        x: character.position.x,
+                        y: character.position.y,
+                        z: character.position.z
+                    },
+                    rotation: character.rotation.y,
+                    modelLoaded: true
+                });
+            }, undefined, function(error) {
+                console.error('Error loading model:', error);
+            });
         }
         
         function createWorld() {
@@ -692,6 +823,49 @@
             lookAtPosition.y += 1; // Look at character's head level
             camera.lookAt(lookAtPosition);
             
+            // Update animations based on movement
+            if (mixer) {
+                // Update animation mixer
+                mixer.update(deltaTime);
+                
+                // Determine which animation to play
+                let newAnimation = 'idle';
+                
+                if (jumping) {
+                    newAnimation = 'jump';
+                } else if (direction.length() > 0) {
+                    // Use running animation if shift is pressed, otherwise walking
+                    newAnimation = keyboard['ShiftLeft'] || keyboard['ShiftRight'] ? 'run' : 'walk';
+                }
+                
+                // Only change animation if needed
+                if (newAnimation !== currentAnimation) {
+                    // Fade out current animation
+                    if (animations[currentAnimation]) {
+                        animations[currentAnimation].fadeOut(0.2);
+                    }
+                    
+                    // Fade in new animation
+                    if (animations[newAnimation]) {
+                        animations[newAnimation].reset().fadeIn(0.2).play();
+                    } else if (animations['idle']) {
+                        // Fallback to idle if animation doesn't exist
+                        animations['idle'].reset().fadeIn(0.2).play();
+                        newAnimation = 'idle';
+                    }
+                    
+                    currentAnimation = newAnimation;
+                }
+            }
+            
+            // Update other players' animations
+            Object.keys(otherPlayers).forEach(id => {
+                const player = otherPlayers[id];
+                if (player.mixer) {
+                    player.mixer.update(deltaTime);
+                }
+            });
+            
             // Send position updates to server (throttled)
             if (socket && Date.now() - lastUpdateTime > updateInterval) {
                 const currentPosition = {
@@ -712,7 +886,9 @@
                 if (positionChanged) {
                     socket.emit("updatePosition", {
                         position: currentPosition,
-                        rotation: currentRotation
+                        rotation: currentRotation,
+                        animation: currentAnimation,
+                        modelLoaded: true
                     });
                     
                     lastPositionUpdate = {

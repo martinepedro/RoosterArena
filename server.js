@@ -55,6 +55,16 @@ io.on('connection', (socket) => {
       players[socket.id].position = data.position;
       players[socket.id].rotation = data.rotation;
       
+      // Store animation state if provided
+      if (data.animation) {
+        players[socket.id].animation = data.animation;
+      }
+      
+      // Store model loaded state if provided
+      if (data.modelLoaded !== undefined) {
+        players[socket.id].modelLoaded = data.modelLoaded;
+      }
+      
       // Broadcast updated positions to all players
       socket.broadcast.emit('playersMoved', players);
     }
