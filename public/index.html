@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Multiplayer Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        #players {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        #startMenu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        input, button {
+            margin: 10px;
+            padding: 8px;
+            width: 200px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        WASD = Move | SPACE = Jump | MOUSE = Look around | CLICK = Lock Mouse | ESC = Free mouse
+    </div>
+    <div id="players">
+        <h3>Players Online: <span id="playerCount">0</span></h3>
+        <div id="playersList"></div>
+    </div>
+    
+    <div id="startMenu">
+        <h2>3D Multiplayer Game</h2>
+        <input type="text" id="playerName" placeholder="Enter your name" maxlength="20">
+        <button id="startButton">Join Game</button>
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    
+    <script>
+        // Socket.io
+        let socket;
+        let playerId;
+        let playerName = "";
+        let otherPlayers = {};
+        
+        // Game state
+        let gameStarted = false;
+        
+        // Global variables
+        let camera, scene, renderer;
+        let character;
+        let clock = new THREE.Clock();
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        let characterRotation = new THREE.Euler(0, 0, 0);
+        let jumping = false;
+        let canJump = true;
+        let pointerLocked = false;
+        let keyboard = {};
+        
+        // Physics
+        const gravity = 30;
+        const jumpStrength = 10;
+        const walkSpeed = 10;
+        const groundLevel = 0;
+        
+        // Setup start menu
+        document.getElementById("startButton").addEventListener("click", startGame);
+        document.getElementById("playerName").addEventListener("keyup", function(event) {
+            if (event.key === "Enter") {
+                startGame();
+            }
+        });
+        
+        function startGame() {
+            playerName = document.getElementById("playerName").value.trim();
+            if (playerName === "") {
+                playerName = "Player" + Math.floor(Math.random() * 1000);
+            }
+            
+            document.getElementById("startMenu").style.display = "none";
+            
+            // Connect to Socket.io server
+            initSocketIO();
+            
+            // Initialize the game
+            init();
+            animate();
+            
+            gameStarted = true;
+        }
+        
+        function initSocketIO() {
+            // Connect to the server (default to same origin if deployed)
+            socket = io();
+            
+            // On connection
+            socket.on("connect", function() {
+                console.log("Connected to server");
+                playerId = socket.id;
+                
+                // Join the game with our player name
+                socket.emit("playerJoin", { name: playerName });
+            });
+            
+            // Receive current players
+            socket.on("currentPlayers", function(players) {
+                updatePlayersDisplay(players);
+                
+                // Create meshes for all existing players
+                Object.keys(players).forEach(function(id) {
+                    if (id !== playerId && !otherPlayers[id]) {
+                        createOtherPlayer(id, players[id]);
+                    }
+                });
+            });
+            
+            // New player joined
+            socket.on("playerJoined", function(playerInfo) {
+                console.log(`${playerInfo.name} joined the game`);
+                createOtherPlayer(playerInfo.id, playerInfo);
+                socket.emit("requestPosition");
+            });
+            
+            // Player left
+            socket.on("playerLeft", function(id) {
+                if (otherPlayers[id]) {
+                    scene.remove(otherPlayers[id].mesh);
+                    delete otherPlayers[id];
+                }
+            });
+            
+            // Update player positions
+            socket.on("playersMoved", function(players) {
+                Object.keys(players).forEach(function(id) {
+                    if (id !== playerId && otherPlayers[id]) {
+                        const playerData = players[id];
+                        const playerMesh = otherPlayers[id].mesh;
+                        
+                        // Update position with some interpolation for smoothness
+                        playerMesh.position.lerp(new THREE.Vector3(
+                            playerData.position.x,
+                            playerData.position.y,
+                            playerData.position.z
+                        ), 0.3);
+                        
+                        // Update rotation
+                        playerMesh.rotation.y = playerData.rotation;
+                    }
+                });
+            });
+            
+            // Update players list
+            socket.on("updatePlayers", function(players) {
+                updatePlayersDisplay(players);
+            });
+        }
+        
+        function updatePlayersDisplay(players) {
+            const playersList = document.getElementById("playersList");
+            const playerCount = document.getElementById("playerCount");
+            
+            // Clear the list
+            playersList.innerHTML = "";
+            
+            // Update count
+            playerCount.textContent = Object.keys(players).length;
+            
+            // Add each player to the list
+            Object.keys(players).forEach(function(id) {
+                const playerItem = document.createElement("div");
+                playerItem.textContent = players[id].name + (id === playerId ? " (You)" : "");
+                playersList.appendChild(playerItem);
+            });
+        }
+        
+        function createOtherPlayer(id, playerInfo) {
+            // Create a player mesh (different color to distinguish from main player)
+            const playerGroup = new THREE.Group();
+            
+            // Body
+            const bodyGeometry = new THREE.BoxGeometry(1, 1.5, 0.5);
+            const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xAA3333 });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.position.y = 0.75;
+            body.castShadow = true;
+            playerGroup.add(body);
+            
+            // Head (direction indicator)
+            const headGeometry = new THREE.ConeGeometry(0.3, 0.5, 4);
+            const headMaterial = new THREE.MeshStandardMaterial({ color: 0xFF3333 });
+            const head = new THREE.Mesh(headGeometry, headMaterial);
+            head.position.set(0, 1.75, 0.25);
+            head.castShadow = true;
+            playerGroup.add(head);
+            
+            // Add name tag
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+            canvas.width = 256;
+            canvas.height = 64;
+            context.fillStyle = "#ffffff";
+            context.font = "bold 24px Arial";
+            context.textAlign = "center";
+            context.fillText(playerInfo.name, 128, 40);
+            
+            const nameTexture = new THREE.CanvasTexture(canvas);
+            const nameMaterial = new THREE.SpriteMaterial({ map: nameTexture });
+            const nameSprite = new THREE.Sprite(nameMaterial);
+            nameSprite.position.set(0, 2.5, 0);
+            nameSprite.scale.set(2, 0.5, 1);
+            playerGroup.add(nameSprite);
+            
+            // Set initial position if available
+            if (playerInfo.position) {
+                playerGroup.position.set(
+                    playerInfo.position.x,
+                    playerInfo.position.y,
+                    playerInfo.position.z
+                );
+                playerGroup.rotation.y = playerInfo.rotation || 0;
+            } else {
+                playerGroup.position.set(0, groundLevel, 0);
+            }
+            
+            // Add to scene
+            scene.add(playerGroup);
+            
+            // Store reference
+            otherPlayers[id] = {
+                mesh: playerGroup,
+                name: playerInfo.name
+            };
+        }
+        
+        function init() {
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb); // Sky blue
+            scene.fog = new THREE.Fog(0x87ceeb, 10, 100);
+            
+            // Camera setup
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 3, 5);
+            
+            // Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+            
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x666666);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(5, 10, 7.5);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            // Create ground
+            createGround();
+            
+            // Create character
+            createCharacter();
+            
+            // Create simple world with obstacles
+            createWorld();
+            
+            // Event listeners
+            window.addEventListener('resize', onWindowResize);
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('click', onMouseClick);
+            document.addEventListener('pointerlockchange', onPointerLockChange, false);
+            
+            // Emit position on load
+            if (socket) {
+                socket.emit("updatePosition", {
+                    position: {
+                        x: character.position.x,
+                        y: character.position.y,
+                        z: character.position.z
+                    },
+                    rotation: character.rotation.y
+                });
+            }
+        }
+        
+        function createGround() {
+            const groundGeometry = new THREE.PlaneGeometry(100, 100);
+            const groundMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x22AA22,
+                roughness: 0.8,
+                metalness: 0.2
+            });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = groundLevel;
+            ground.receiveShadow = true;
+            scene.add(ground);
+        }
+        
+        function createCharacter() {
+            // Create simple character (blue box with a cone on top to indicate direction)
+            const characterGroup = new THREE.Group();
+            
+            // Body
+            const bodyGeometry = new THREE.BoxGeometry(1, 1.5, 0.5);
+            const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x3333AA });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.position.y = 0.75;
+            body.castShadow = true;
+            characterGroup.add(body);
+            
+            // Head (direction indicator)
+            const headGeometry = new THREE.ConeGeometry(0.3, 0.5, 4);
+            const headMaterial = new THREE.MeshStandardMaterial({ color: 0x3333FF });
+            const head = new THREE.Mesh(headGeometry, headMaterial);
+            head.position.set(0, 1.75, 0.25);
+            head.castShadow = true;
+            characterGroup.add(head);
+            
+            // Add name tag
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+            canvas.width = 256;
+            canvas.height = 64;
+            context.fillStyle = "#ffffff";
+            context.font = "bold 24px Arial";
+            context.textAlign = "center";
+            context.fillText(playerName, 128, 40);
+            
+            const nameTexture = new THREE.CanvasTexture(canvas);
+            const nameMaterial = new THREE.SpriteMaterial({ map: nameTexture });
+            const nameSprite = new THREE.Sprite(nameMaterial);
+            nameSprite.position.set(0, 2.5, 0);
+            nameSprite.scale.set(2, 0.5, 1);
+            characterGroup.add(nameSprite);
+            
+            character = characterGroup;
+            character.position.set(0, groundLevel, 0);
+            scene.add(character);
+        }
+        
+        function createWorld() {
+            // Create some cubes as obstacles
+            const boxGeometry = new THREE.BoxGeometry(2, 2, 2);
+            const boxMaterial = new THREE.MeshStandardMaterial({ color: 0xAA3333 });
+            
+            // Fixed positions for obstacles to ensure same world for all players
+            const obstaclePositions = [
+                { x: -10, y: 1, z: -5 },
+                { x: 8, y: 1, z: 8 },
+                { x: -7, y: 1, z: 12 },
+                { x: 15, y: 1, z: -10 },
+                { x: -15, y: 1, z: -15 },
+                { x: 5, y: 1, z: -15 },
+                { x: -12, y: 1, z: 7 }
+            ];
+            
+            obstaclePositions.forEach(pos => {
+                const box = new THREE.Mesh(boxGeometry, boxMaterial);
+                box.position.set(pos.x, pos.y, pos.z);
+                box.castShadow = true;
+                box.receiveShadow = true;
+                scene.add(box);
+            });
+            
+            // Create some elevated platforms
+            const platformGeometry = new THREE.BoxGeometry(4, 0.5, 4);
+            const platformMaterial = new THREE.MeshStandardMaterial({ color: 0xAAAAAA });
+            
+            const platformPositions = [
+                { x: 0, y: 1.5, z: -8 },
+                { x: -5, y: 2, z: 5 },
+                { x: 10, y: 2.5, z: 0 },
+                { x: 5, y: 3, z: 10 },
+                { x: -10, y: 3.5, z: -10 }
+            ];
+            
+            platformPositions.forEach(pos => {
+                const platform = new THREE.Mesh(platformGeometry, platformMaterial);
+                platform.position.set(pos.x, pos.y, pos.z);
+                platform.castShadow = true;
+                platform.receiveShadow = true;
+                scene.add(platform);
+            });
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        function onKeyDown(event) {
+            keyboard[event.code] = true;
+        }
+        
+        function onKeyUp(event) {
+            keyboard[event.code] = false;
+        }
+        
+        function onMouseMove(event) {
+            if (pointerLocked) {
+                const movementX = event.movementX || 0;
+                const movementY = event.movementY || 0;
+                
+                // Rotate character based on mouse X movement
+                characterRotation.y -= movementX * 0.002;
+                
+                // Vertical camera rotation (limited)
+                const verticalRotation = camera.rotation.x - movementY * 0.002;
+                camera.rotation.x = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, verticalRotation));
+            }
+        }
+        
+        function onMouseClick() {
+            if (!pointerLocked) {
+                renderer.domElement.requestPointerLock();
+            }
+        }
+        
+        function onPointerLockChange() {
+            pointerLocked = document.pointerLockElement === renderer.domElement;
+        }
+        
+        // Position tracking for networking
+        let lastPositionUpdate = { 
+            x: 0, 
+            y: 0, 
+            z: 0,
+            rotation: 0
+        };
+        let updateInterval = 100; // ms between updates
+        let lastUpdateTime = 0;
+        
+        function updateCharacter(deltaTime) {
+            if (!character) return;
+            
+            // Apply gravity
+            velocity.y -= gravity * deltaTime;
+            
+            // Reset horizontal movement
+            velocity.x = 0;
+            velocity.z = 0;
+            
+            // Calculate movement direction based on keys
+            direction.set(0, 0, 0);
+            
+            if (keyboard['KeyW']) {
+                direction.z = -1;
+            }
+            if (keyboard['KeyS']) {
+                direction.z = 1;
+            }
+            if (keyboard['KeyA']) {
+                direction.x = -1;
+            }
+            if (keyboard['KeyD']) {
+                direction.x = 1;
+            }
+            
+            // Jump
+            if (keyboard['Space'] && canJump && character.position.y <= groundLevel + 0.01) {
+                velocity.y = jumpStrength;
+                canJump = false;
+                jumping = true;
+                setTimeout(() => { canJump = true; }, 1000); // Prevent spamming jump
+            }
+            
+            // Normalize direction for consistent speed in all directions
+            if (direction.length() > 0) {
+                direction.normalize();
+            }
+            
+            // Apply character rotation to movement direction
+            direction.applyEuler(characterRotation);
+            
+            // Set velocity based on direction and speed
+            velocity.x = direction.x * walkSpeed;
+            velocity.z = direction.z * walkSpeed;
+            
+            // Update character position
+            character.position.x += velocity.x * deltaTime;
+            character.position.z += velocity.z * deltaTime;
+            character.position.y += velocity.y * deltaTime;
+            
+            // Prevent falling below ground
+            if (character.position.y < groundLevel) {
+                character.position.y = groundLevel;
+                velocity.y = 0;
+                jumping = false;
+            }
+            
+            // Update character rotation
+            character.rotation.y = characterRotation.y;
+            
+            // Update camera position (third-person, positioned in front of the character)
+            const cameraOffset = new THREE.Vector3(
+                3 * Math.sin(characterRotation.y),
+                2,
+                3 * Math.cos(characterRotation.y)
+            );
+            
+            camera.position.copy(character.position).add(cameraOffset);
+            
+            // Make camera look at character
+            const lookAtPosition = character.position.clone();
+            lookAtPosition.y += 1; // Look at character's head level
+            camera.lookAt(lookAtPosition);
+            
+            // Send position updates to server (throttled)
+            if (socket && Date.now() - lastUpdateTime > updateInterval) {
+                const currentPosition = {
+                    x: character.position.x,
+                    y: character.position.y,
+                    z: character.position.z
+                };
+                
+                const currentRotation = character.rotation.y;
+                
+                // Only send updates if position changed significantly
+                const positionChanged = 
+                    Math.abs(lastPositionUpdate.x - currentPosition.x) > 0.01 ||
+                    Math.abs(lastPositionUpdate.y - currentPosition.y) > 0.01 ||
+                    Math.abs(lastPositionUpdate.z - currentPosition.z) > 0.01 ||
+                    Math.abs(lastPositionUpdate.rotation - currentRotation) > 0.01;
+                
+                if (positionChanged) {
+                    socket.emit("updatePosition", {
+                        position: currentPosition,
+                        rotation: currentRotation
+                    });
+                    
+                    lastPositionUpdate = {
+                        x: currentPosition.x,
+                        y: currentPosition.y,
+                        z: currentPosition.z,
+                        rotation: currentRotation
+                    };
+                    lastUpdateTime = Date.now();
+                }
+            }
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const deltaTime = Math.min(clock.getDelta(), 0.1);
+            
+            if (gameStarted) {
+                updateCharacter(deltaTime);
+            }
+            
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
