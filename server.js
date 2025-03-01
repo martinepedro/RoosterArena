@@ -78,6 +78,17 @@ io.on('connection', (socket) => {
       io.emit('updatePlayers', players);
     }
   });
+  
+  // Handle chat messages
+  socket.on('chatMessage', (data) => {
+    console.log(`Chat message from ${data.sender}: ${data.message}`);
+    
+    // Broadcast the message to all clients
+    io.emit('chatMessage', {
+      sender: data.sender,
+      message: data.message
+    });
+  });
 });
 
 // Start the server
