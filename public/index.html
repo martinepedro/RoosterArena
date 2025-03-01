@@ -102,7 +102,7 @@
 </head>
 <body>
     <div id="info">
-        WASD = Move | SPACE = Jump | MOUSE = Look around | CLICK = Lock Mouse | ESC = Free mouse
+        WASD = Move | SPACE = Jump | MOUSE = Look around | CLICK = Lock Mouse | ESC = Free mouse/untarget chat
     </div>
     <div id="players">
         <h3>Players Online: <span id="playerCount">0</span></h3>
@@ -129,7 +129,6 @@
         let playerId;
         let playerName = "";
         let otherPlayers = {};
-        let chatVisible = true;
         
         // Game state
         let gameStarted = false;
@@ -295,16 +294,10 @@
                 }
             });
             
-            // Toggle chat visibility with T key
-            document.addEventListener("keydown", function(event) {
-                if (event.key === "t" || event.key === "T") {
-                    chatVisible = !chatVisible;
-                    chatContainer.style.display = chatVisible ? "flex" : "none";
-                    
-                    // If showing chat, focus the input
-                    if (chatVisible) {
-                        setTimeout(() => chatInput.focus(), 10);
-                    }
+            // Handle the Escape key to remove focus from the chat input
+            chatInput.addEventListener("keydown", function(event) {
+                if (event.key === "Escape") {
+                    chatInput.blur();
                 }
             });
         }
@@ -577,6 +570,13 @@
         
         function onKeyDown(event) {
             keyboard[event.code] = true;
+            
+            // Check if the ESC key is pressed and it's not in a text input
+            if (event.code === 'Escape' && document.activeElement.tagName !== 'INPUT') {
+                if (pointerLocked) {
+                    document.exitPointerLock();
+                }
+            }
         }
         
         function onKeyUp(event) {
