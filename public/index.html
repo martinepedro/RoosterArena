@@ -123,6 +123,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     
     <script>
@@ -150,11 +151,24 @@
         let pointerLocked = false;
         let keyboard = {};
         
+        // Physics world
+        let world;
+        let physicsBodies = {};
+        let physicsObjects = [];
+        let characterBody;
+        let terrainBody;
+        
+        // Raycaster for ground detection
+        const raycaster = new THREE.Raycaster();
+        
         // Physics
         const gravity = 30;
         const jumpStrength = 10;
         const walkSpeed = 10;
         const groundLevel = 0;
+        
+        // World map URL
+        const WORLD_MAP_URL = 'https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/gltf/collision-world.glb';
         
         // Setup start menu
         document.getElementById("startButton").addEventListener("click", startGame);
@@ -298,7 +312,7 @@
             const chatContainer = document.getElementById("chat-container");
             
             // Initially hide chat until the player starts
-            chatContainer.style.display = "flex";
+            chatContainer.style.display = gameStarted ? "flex" : "none";
             
             // Handle chat input
             chatInput.addEventListener("keypress", function(event) {
@@ -531,27 +545,29 @@
             }
         }
         
-        function createGround() {
-            const groundGeometry = new THREE.PlaneGeometry(100, 100);
-            const groundMaterial = new THREE.MeshStandardMaterial({ 
-                color: 0x22AA22,
-                roughness: 0.8,
-                metalness: 0.2
-            });
-            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-            ground.rotation.x = -Math.PI / 2;
-            ground.position.y = groundLevel;
-            ground.receiveShadow = true;
-            scene.add(ground);
-        }
-        
         function createCharacter() {
             // Create a group to hold the character and its label
             character = new THREE.Group();
             
             // Position the character group at ground level
-            character.position.set(0, groundLevel, 0);
+            character.position.set(0, groundLevel + 1, 0);
             scene.add(character);
+            
+            // Create character physics body
+            const radius = 0.3;
+            characterBody = new CANNON.Body({
+                mass: 5,
+                position: new CANNON.Vec3(0, groundLevel + 1, 0),
+                shape: new CANNON.Sphere(radius),
+                material: new CANNON.Material()
+            });
+            
+            // Set damping to prevent infinite sliding
+            characterBody.linearDamping = 0.9;
+            characterBody.angularDamping = 0.9;
+            
+            // Add character body to physics world
+            world.addBody(characterBody);
             
             // Add name tag above where the model will be
             const canvas = document.createElement("canvas");
@@ -649,49 +665,270 @@
             });
         }
         
-        function createWorld() {
-            // Create some cubes as obstacles
+        function loadWorldMap() {
+            // Set up loaders
+            const dracoLoader = new THREE.DRACOLoader();
+            dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/draco/');
+            
+            const loader = new THREE.GLTFLoader();
+            loader.setDRACOLoader(dracoLoader);
+            
+            // Load the world map
+            loader.load(WORLD_MAP_URL, function(gltf) {
+                const worldMap = gltf.scene;
+                
+                // Scale the world
+                worldMap.scale.set(3, 3, 3);
+                
+                // Add shadows
+                worldMap.traverse(function(node) {
+                    if (node.isMesh) {
+                        node.castShadow = true;
+                        node.receiveShadow = true;
+                        
+                        // Create physics body for this mesh
+                        if (node.geometry) {
+                            // Skip very small objects for performance
+                            if (node.geometry.boundingSphere && node.geometry.boundingSphere.radius < 0.1) {
+                                return;
+                            }
+                            
+                            // Create a trimesh shape for complex geometry
+                            const vertices = node.geometry.attributes.position.array;
+                            const indices = node.geometry.index ? node.geometry.index.array : undefined;
+                            
+                            let shape;
+                            
+                            // For ground/floor like objects, use heightfield or plane
+                            if (node.name.includes('ground') || node.name.includes('floor') || node.name.includes('terrain')) {
+                                shape = new CANNON.Plane();
+                                
+                                // Create a static body
+                                const body = new CANNON.Body({
+                                    mass: 0, // Static body
+                                    shape: shape,
+                                    material: new CANNON.Material()
+                                });
+                                
+                                // Position and rotate to match the mesh
+                                body.position.copy(node.position);
+                                body.quaternion.copy(node.quaternion);
+                                body.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2); // Rotate to be flat
+                                
+                                // Add body to world
+                                world.addBody(body);
+                                terrainBody = body;
+                            }
+                            // For walls and obstacles, use boxes or convex hulls
+                            else if (node.name.includes('wall') || node.name.includes('obstacle') || node.name.includes('building')) {
+                                // Use a box shape for simplicity
+                                const box = new THREE.Box3().setFromObject(node);
+                                const size = box.getSize(new THREE.Vector3());
+                                
+                                shape = new CANNON.Box(new CANNON.Vec3(size.x / 2, size.y / 2, size.z / 2));
+                                
+                                // Create a static body
+                                const body = new CANNON.Body({
+                                    mass: 0, // Static body
+                                    shape: shape,
+                                    material: new CANNON.Material()
+                                });
+                                
+                                // Position to match the mesh
+                                const center = box.getCenter(new THREE.Vector3());
+                                body.position.set(center.x, center.y, center.z);
+                                body.quaternion.copy(node.quaternion);
+                                
+                                // Add body to world
+                                world.addBody(body);
+                            }
+                            // For other objects, use a simple collision shape
+                            else {
+                                // Create a dynamic body for interactive objects
+                                const isDynamic = !node.name.includes('static') && node.name.includes('physics');
+                                
+                                if (isDynamic) {
+                                    // Use a box shape
+                                    const box = new THREE.Box3().setFromObject(node);
+                                    const size = box.getSize(new THREE.Vector3());
+                                    
+                                    shape = new CANNON.Box(new CANNON.Vec3(size.x / 2, size.y / 2, size.z / 2));
+                                    
+                                    // Create a dynamic body
+                                    const body = new CANNON.Body({
+                                        mass: 1, // Dynamic body
+                                        shape: shape,
+                                        material: new CANNON.Material()
+                                    });
+                                    
+                                    // Position to match the mesh
+                                    const center = box.getCenter(new THREE.Vector3());
+                                    body.position.set(center.x, center.y, center.z);
+                                    body.quaternion.copy(node.quaternion);
+                                    
+                                    // Add body to world
+                                    world.addBody(body);
+                                    
+                                    // Store reference to update the mesh
+                                    physicsObjects.push({
+                                        mesh: node,
+                                        body: body
+                                    });
+                                }
+                            }
+                        }
+                    }
+                });
+                
+                // Add the world to the scene
+                scene.add(worldMap);
+                
+                // Create additional physics objects
+                createPhysicsCubes();
+            }, 
+            // Progress callback
+            function(xhr) {
+                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+            }, 
+            // Error callback
+            function(error) {
+                console.error('Error loading world map:', error);
+                
+                // If world map fails to load, create a simple ground
+                createGround();
+                createSimpleWorld();
+            });
+        }
+        
+        function createGround() {
+            const groundGeometry = new THREE.PlaneGeometry(100, 100);
+            const groundMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x22AA22,
+                roughness: 0.8,
+                metalness: 0.2
+            });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = groundLevel;
+            ground.receiveShadow = true;
+            scene.add(ground);
+            
+            // Create a ground physics body
+            const groundShape = new CANNON.Plane();
+            terrainBody = new CANNON.Body({
+                mass: 0, // Static body
+                shape: groundShape,
+                material: new CANNON.Material()
+            });
+            terrainBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2); // Rotate to be flat
+            terrainBody.position.set(0, groundLevel, 0);
+            world.addBody(terrainBody);
+        }
+        
+        function createPhysicsCubes() {
+            // Create some physics cubes
+            const cubeSize = 1;
+            const cubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+            const cubeMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x8866AA,
+                roughness: 0.5,
+                metalness: 0.5
+            });
+            
+            // Create several cubes
+            for (let i = 0; i < 20; i++) {
+                const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+                const x = Math.random() * 30 - 15;
+                const y = 5 + Math.random() * 10;
+                const z = Math.random() * 30 - 15;
+                
+                cube.position.set(x, y, z);
+                cube.castShadow = true;
+                cube.receiveShadow = true;
+                scene.add(cube);
+                
+                // Create a dynamic physics body
+                const shape = new CANNON.Box(new CANNON.Vec3(cubeSize/2, cubeSize/2, cubeSize/2));
+                const body = new CANNON.Body({
+                    mass: 1, // Dynamic body
+                    shape: shape,
+                    position: new CANNON.Vec3(x, y, z),
+                    material: new CANNON.Material()
+                });
+                
+                // Add random rotation and movement
+                body.angularVelocity.set(
+                    Math.random() * 2 - 1,
+                    Math.random() * 2 - 1,
+                    Math.random() * 2 - 1
+                );
+                
+                // Add body to world
+                world.addBody(body);
+                
+                // Store reference to update the mesh
+                physicsObjects.push({
+                    mesh: cube,
+                    body: body
+                });
+            }
+        }
+        
+        function createSimpleWorld() {
+            // Create some simple obstacles
             const boxGeometry = new THREE.BoxGeometry(2, 2, 2);
             const boxMaterial = new THREE.MeshStandardMaterial({ color: 0xAA3333 });
             
-            // Fixed positions for obstacles to ensure same world for all players
-            const obstaclePositions = [
-                { x: -10, y: 1, z: -5 },
-                { x: 8, y: 1, z: 8 },
-                { x: -7, y: 1, z: 12 },
-                { x: 15, y: 1, z: -10 },
-                { x: -15, y: 1, z: -15 },
-                { x: 5, y: 1, z: -15 },
-                { x: -12, y: 1, z: 7 }
-            ];
-            
-            obstaclePositions.forEach(pos => {
+            for (let i = 0; i < 10; i++) {
                 const box = new THREE.Mesh(boxGeometry, boxMaterial);
-                box.position.set(pos.x, pos.y, pos.z);
+                const x = Math.random() * 30 - 15;
+                const z = Math.random() * 30 - 15;
+                
+                box.position.set(x, 1, z);
                 box.castShadow = true;
                 box.receiveShadow = true;
                 scene.add(box);
-            });
+                
+                // Create a static physics body
+                const shape = new CANNON.Box(new CANNON.Vec3(1, 1, 1));
+                const body = new CANNON.Body({
+                    mass: 0, // Static body
+                    shape: shape,
+                    position: new CANNON.Vec3(x, 1, z),
+                    material: new CANNON.Material()
+                });
+                
+                // Add body to world
+                world.addBody(body);
+            }
             
             // Create some elevated platforms
             const platformGeometry = new THREE.BoxGeometry(4, 0.5, 4);
             const platformMaterial = new THREE.MeshStandardMaterial({ color: 0xAAAAAA });
             
-            const platformPositions = [
-                { x: 0, y: 1.5, z: -8 },
-                { x: -5, y: 2, z: 5 },
-                { x: 10, y: 2.5, z: 0 },
-                { x: 5, y: 3, z: 10 },
-                { x: -10, y: 3.5, z: -10 }
-            ];
-            
-            platformPositions.forEach(pos => {
+            for (let i = 0; i < 5; i++) {
                 const platform = new THREE.Mesh(platformGeometry, platformMaterial);
-                platform.position.set(pos.x, pos.y, pos.z);
+                const x = Math.random() * 20 - 10;
+                const y = 1 + Math.random() * 3;
+                const z = Math.random() * 20 - 10;
+                
+                platform.position.set(x, y, z);
                 platform.castShadow = true;
                 platform.receiveShadow = true;
                 scene.add(platform);
-            });
+                
+                // Create a static physics body
+                const shape = new CANNON.Box(new CANNON.Vec3(2, 0.25, 2));
+                const body = new CANNON.Body({
+                    mass: 0, // Static body
+                    shape: shape,
+                    position: new CANNON.Vec3(x, y, z),
+                    material: new CANNON.Material()
+                });
+                
+                // Add body to world
+                world.addBody(body);
+            }
         }
         
         function onWindowResize() {
@@ -752,14 +989,7 @@
         let lastUpdateTime = 0;
         
         function updateCharacter(deltaTime) {
-            if (!character) return;
-            
-            // Apply gravity
-            velocity.y -= gravity * deltaTime;
-            
-            // Reset horizontal movement
-            velocity.x = 0;
-            velocity.z = 0;
+            if (!character || !characterBody) return;
             
             // Calculate movement direction based on keys
             direction.set(0, 0, 0);
@@ -771,15 +1001,24 @@
                 direction.z = -1;
             }
             if (keyboard['KeyA']) {
-                direction.x = 1;  // Changed from -1 to 1 (inverted)
+                direction.x = 1;  // Inverted
             }
             if (keyboard['KeyD']) {
-                direction.x = -1;  // Changed from 1 to -1 (inverted)
+                direction.x = -1;  // Inverted
             }
             
+            // Check if character is on the ground
+            const characterPosition = characterBody.position;
+            raycaster.set(
+                new THREE.Vector3(characterPosition.x, characterPosition.y, characterPosition.z),
+                new THREE.Vector3(0, -1, 0)
+            );
+            const intersects = raycaster.intersectObjects(scene.children, true);
+            const onGround = intersects.length > 0 && intersects[0].distance < 1.1;
+            
             // Jump
-            if (keyboard['Space'] && canJump && character.position.y <= groundLevel + 0.01) {
-                velocity.y = jumpStrength;
+            if (keyboard['Space'] && canJump && onGround) {
+                characterBody.velocity.y = jumpStrength;
                 canJump = false;
                 jumping = true;
                 setTimeout(() => { canJump = true; }, 1000); // Prevent spamming jump
@@ -793,48 +1032,26 @@
             // Apply character rotation to movement direction
             direction.applyEuler(characterRotation);
             
-            // Set velocity based on direction and speed
-            velocity.x = direction.x * walkSpeed;
-            velocity.z = direction.z * walkSpeed;
+            // Apply movement force to physics body
+            const movementSpeed = keyboard['ShiftLeft'] || keyboard['ShiftRight'] ? walkSpeed * 2 : walkSpeed;
+            const force = new CANNON.Vec3(
+                direction.x * movementSpeed,
+                0,
+                direction.z * movementSpeed
+            );
             
-            // Update character position
-            character.position.x += velocity.x * deltaTime;
-            character.position.z += velocity.z * deltaTime;
-            character.position.y += velocity.y * deltaTime;
+            // Apply the force at the center of the body
+            characterBody.applyLocalForce(force, new CANNON.Vec3());
             
-            // Prevent falling below ground
-            if (character.position.y < groundLevel) {
-                character.position.y = groundLevel;
-                velocity.y = 0;
-                jumping = false;
-            }
+            // Update Three.js object from physics body
+            character.position.copy(characterBody.position);
+            character.quaternion.copy(characterBody.quaternion);
             
-            // Update character rotation
+            // Update character rotation (override physics rotation for better control)
             character.rotation.y = characterRotation.y;
             
-            // Update camera position (third-person, positioned based on character direction)
-            // Base offset distance from character
-            const offsetDistance = 4;
-            
-            // Calculate horizontal position based on character rotation
-            const horizontalOffset = new THREE.Vector3(
-                -Math.sin(characterRotation.y) * offsetDistance,
-                0,
-                -Math.cos(characterRotation.y) * offsetDistance
-            );
-            
-            // Apply vertical angle to get the final camera position
-            const verticalOffset = Math.sin(cameraVerticalAngle) * offsetDistance;
-            
-            camera.position.set(
-                character.position.x + horizontalOffset.x,
-                character.position.y + 1.5 + verticalOffset, // Add 1.5 for character height
-                character.position.z + horizontalOffset.z
-            );
-            
-            // Look at the character's head level
-            const lookAtPosition = character.position.clone().add(new THREE.Vector3(0, 1.5, 0));
-            camera.lookAt(lookAtPosition);
+            // Update camera position based on character position
+            updateCamera();
             
             // Update animations based on movement
             if (mixer) {
@@ -915,13 +1132,49 @@
             }
         }
         
+        function updateCamera() {
+            // Update camera position (third-person, positioned based on character direction)
+            // Base offset distance from character
+            const offsetDistance = 4;
+            
+            // Calculate horizontal position based on character rotation
+            const horizontalOffset = new THREE.Vector3(
+                -Math.sin(characterRotation.y) * offsetDistance,
+                0,
+                -Math.cos(characterRotation.y) * offsetDistance
+            );
+            
+            // Apply vertical angle to get the final camera position
+            const verticalOffset = Math.sin(cameraVerticalAngle) * offsetDistance;
+            
+            camera.position.set(
+                character.position.x + horizontalOffset.x,
+                character.position.y + 1.5 + verticalOffset, // Add 1.5 for character height
+                character.position.z + horizontalOffset.z
+            );
+            
+            // Look at the character's head level
+            const lookAtPosition = character.position.clone().add(new THREE.Vector3(0, 1.5, 0));
+            camera.lookAt(lookAtPosition);
+        }
+        
         function animate() {
             requestAnimationFrame(animate);
             
             const deltaTime = Math.min(clock.getDelta(), 0.1);
             
             if (gameStarted) {
+                // Step the physics world
+                world.step(deltaTime);
+                
+                // Update character movement and camera
                 updateCharacter(deltaTime);
+                
+                // Update physics objects
+                physicsObjects.forEach(object => {
+                    object.mesh.position.copy(object.body.position);
+                    object.mesh.quaternion.copy(object.body.quaternion);
+                });
             }
             
             renderer.render(scene, camera);
