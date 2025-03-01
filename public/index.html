@@ -762,16 +762,16 @@
             direction.set(0, 0, 0);
             
             if (keyboard['KeyW']) {
-                direction.z = -1;
-            }
-            if (keyboard['KeyS']) {
                 direction.z = 1;
             }
+            if (keyboard['KeyS']) {
+                direction.z = -1;
+            }
             if (keyboard['KeyA']) {
-                direction.x = -1;
+                direction.x = 1;
             }
             if (keyboard['KeyD']) {
-                direction.x = 1;
+                direction.x = -1;
             }
             
             // Jump
